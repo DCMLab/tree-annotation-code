@@ -18,60 +18,172 @@
         (db/tree-selected? node) "tree-selected"
         true ""))
 
+
+(defn latex-component [label]
+  "Converts node's input to latex format by surrounding the string with '$$' on each side." 
+  (r/create-class
+   {:component-did-mount (fn [this] (js/renderMathInElement (rdom/dom-node this)))
+    :component-did-update (fn [this _] (js/renderMathInElement (rdom/dom-node this)))
+    :reagent-render (fn [label]
+                      (let [single-dollar? (and (clojure.string/starts-with? label "$")
+                                                (clojure.string/ends-with? label "$")
+                                                (not (clojure.string/starts-with? label "$$"))
+                                                (not (clojure.string/ends-with? label "$$"))) ;; If the input is surrounded by '$'
+                            double-dollar? (and (clojure.string/starts-with? label "$$") ;; If the input is surrounded by '$$'
+                                                (clojure.string/ends-with? label "$$"))]
+                        [:span {:class "latex"} (cond
+                                                  single-dollar? (str "$" label "$") ;; If surrounded by '$', add '$'.
+                                                  double-dollar? label ;; If already surrounded by '$$', keep as is.
+                                                  :else (str "$$" label "$$"))]))})) ;; If no '$', add '$$'.
+
+
 (defn node-component [node index]
   "Create a component (a button or text field) from a node."
-  (if (:renaming node)
-    [:input.node
-     {:auto-focus true
-      :type "text"
-      :value (:label node)
-      :on-change #(db/rename-node (-> % .-target .-value) index)
-      :on-focus #(-> % .-target .select)
-      :on-key-down (fn [ev]
-                     (when (= (.-key ev) "Enter")
-                       (db/stop-renaming-node index)))}]
-    [:div.node
-     {:class (selection-class node)
-      :on-click #(db/toggle-select! index)
-      :on-double-click #(db/start-renaming-node index)}
-     (:label node)]))
+  (let [label (:label node)
+        math-tree? (db/math-tree?)
+        input-ref (atom nil)]
+    (if (:renaming node)
+      (let [set-input-ref (fn [element]
+                            (reset! input-ref element)
+                            (when element
+                              (set! (.-value element) label)
+                              (.focus element)))]
+        [:input.node
+         {:ref set-input-ref
+          :type "text"
+          :on-change #(db/rename-node (-> % .-target .-value) index)
+          :on-blur #(db/stop-renaming-node index)
+          :on-key-down (fn [ev]
+                         (when (= (.-key ev) "Enter")
+                           (db/stop-renaming-node index)))}])
+      [:div.node
+       {:class (selection-class node)
+        :on-click #(db/toggle-select! index)
+        :on-double-click #(db/start-renaming-node index)}
+       (if (or (clojure.string/starts-with? label "$") math-tree?)
+         [latex-component label]
+         label)])))
+
+
 
 ;--------------------------------------;
 ; Tree component and tree manipulation ;
 ;--------------------------------------;
 
+
+(defn arity-input-component []
+  [:div
+   [:div.pure-form.pure-g {:style {:display "flex" :align-items "center" :margin-right "7px" :margin-top "20px"}}
+    [:h4 {:style {:letter-spacing "0px"
+                  :font-weight "lighter"
+                  :margin-right "10px"
+                  :margin-left "20px"}} "Split arity"]
+    [:input.pure-input-1
+     {:style {:width "60px"}
+      :type "number"
+      :value (db/get-split-arity)
+      :min 1
+      :on-change #(db/set-split-arity (-> % .-target .-value js/parseInt))}]]
+   [:div.pure-u-1.pure-u-md-3-4]])
+
+(defn mathbox-component []
+  [:label.math-box
+   [:input
+    {:type "checkbox"
+     :checked (db/math-tree?)
+     :on-change db/toggle-math-tree!}]
+   " Math tree"])
+
+(defn tree-reverse-component []
+  [:label.reverse-box
+   [:input
+    {:type "checkbox"
+     :checked (db/tree-reverse?)
+     :on-change db/toggle-tree-direction!}]
+   " Reverse tree"])
+
+
+(defn undo-redo-component []
+  [:div.undo-redo-buttons {:style {:margin-top "20px"}}
+   [:button.pure-button
+    {:on-click db/undo} "↩"]
+   [:button.pure-button
+    {:on-click db/redo} "↪"]])
+
+
 (defn tree-component [node index]
   (let [children (:children node)
         length (count children)
-        component (node-component node index)]
+        component (node-component node index)
+        reversed (db/tree-reverse?)]
     [:div.subtree
+     {:class (if reversed "subtree reversed" "subtree")}
+     component
      (into [:div.forest.children]
            (mapv (fn [child i] (tree-component child (conj index i)))
                  children
-                 (range length)))
-     component]))
+                 (range length)))]))
+
 
 (defn tree-annotation-component []
   "Creates a set of components corresponding to the nodes in the database
-and some buttons for interaction."
+  and some buttons for interaction."
   [:div
    [:div.content
     [:h2 "Annotation"]
     [:div.pure-button-group.controls
      {:role "group"}
+     [:div
+      [undo-redo-component]
+      [:button {:style {:position "relative"
+                        :top "20px"}
+                :on-click db/save-forest}
+       "Save forest"]]
+     [arity-input-component]
      [:button.pure-button
-      {:on-click db/combine-selected} "Combine"]
+      {:on-click (fn [e]
+                   (db/elaborate-selected)
+                   (.blur (.-currentTarget e)))} "Elaborate"]
+     [:button.pure-button.button-uncombine
+      {:on-click (fn [e]
+                   (db/unelaborate-selected)
+                   (.blur (.-currentTarget e)))} "Unelaborate"]
      [:button.pure-button
-      {:on-click db/deselect-all} "Deselect All"]
+      {:on-click (fn [e]
+                   (db/combine-selected)
+                   (.blur (.-currentTarget e)))} "Combine"]
+     [:button.pure-button.button-uncombine
+      {:on-click (fn [e]
+                   (db/uncombine-selected)
+                   (.blur (.-currentTarget e)))} "Uncombine"]
+     [:button.pure-button
+      {:on-click (fn [e]
+                   (db/deselect-all)
+                   (.blur (.-currentTarget e)))} "Deselect All"]
      [:button.pure-button.button-delete
-      {:on-click db/delete-selected} "Delete"]]]
+      {:on-click (fn [e]
+                   (db/delete-selected)
+                   (.blur (.-currentTarget e)))} "Delete"]]]
+
+   [:div.wrapper
+    [:button.pure-button.button-new-left
+     {:on-click (fn [e]
+                  (db/add-left)
+                  (.blur (.-currentTarget e)))} "⬅"]
+    [:button.pure-button.button-new-right
+     {:on-click (fn [e]
+                  (db/add-right)
+                  (.blur (.-currentTarget e)))} "➡"]
+    [tree-reverse-component]
+    [mathbox-component]]
    (into
-    [:div.tree.forest]
+    [:div#forest.tree.forest {:style {:padding "20px"}}]
     (let [forest (db/get-forest)
           length (count forest)]
       (mapv (fn [tree i] (tree-component tree [i]))
             forest
             (range length))))])
+
 
 ;------------------------;
 ; tree preview component ;
@@ -103,14 +215,24 @@ and some buttons for interaction."
 (defn svg-child-line [w h {xc :x wc :w hc :h}]
   [:line {:x1 (* svg-scale (/ (dec w) 2)) :y1 0
           :x2 (* svg-scale (+ xc (/ (dec wc) 2))) :y2 (* svg-scale (- (inc h) hc))
-          :stroke "black"}])
+          :stroke "grey"}])
 
 (defn svg-label [label x y]
-  [:text {:x x :y y
-          :text-anchor "middle"
-          :dominant-baseline "middle"
-          :filter "url(#clear)"}
-   label])
+  (let [position {:x (* svg-scale x) :y (* svg-scale y)}]
+    (if (or (clojure.string/starts-with? label "$") (db/math-tree?))
+      [:g
+       [:text {:style {:visibility "hidden"}
+               :x (:x position)
+               :y (:y position)
+               :text-anchor "middle"
+               :dominant-baseline "middle"
+               :filter "url(#clear)"} label]
+       [:foreignObject {:x (+ (:x position) -49) :y (+ (:y position) -10)
+                        :width 100 :height 100} ;; Arbitrary width/height
+        [latex-component label]]]
+      [:text (merge position {:text-anchor "middle" :dominant-baseline "middle"
+                              :filter "url(#clear)"}) label])))
+
 
 (defn svg-subtree [node]
   (let [children (:children node)
@@ -128,8 +250,9 @@ and some buttons for interaction."
        :svg
        [:svg {:style {:overflow "visible"}}
         (into [:g] (map (partial svg-child-line w h) child-coords))
-        (svg-label label (* svg-scale (/ (dec w) 2)) 0)
+        (svg-label label (* svg-scale (/ (dec w) 100)) 0)
         children-svg]})))
+
 
 (defn svg-tree-component []
   (let [forest (db/get-forest)
@@ -139,15 +262,16 @@ and some buttons for interaction."
         height (* svg-scale (+ h 2))
         svg (into
              [:svg {:width width :height height
-                    :viewBox [(- svg-scale) (- svg-scale) width height]
+                    :viewBox [(- -24 svg-scale) (- 10 svg-scale) width height]
                     :style {:overflow "visible"}}
-              [:defs [:filter {:x 0 :y 0 :width 1 :height 1 :id "clear"}
+              [:defs [:filter {:x 0 :y -0.1 :width 1 :height 1.5 :id "clear"}
                       [:feFlood {:flood-color "white"}]
                       [:feComposite {:in "SourceGraphic"}]]]]
              trees-svg)]
     [:div#preview.tree
      (when (db/show-preview?)
        svg)]))
+
 
 ;-----------------;
 ; Input component ;
@@ -191,8 +315,7 @@ and some buttons for interaction."
       {:type "checkbox"
        :checked (db/strip-math?)
        :on-change db/toggle-strip-math!}]
-     " strip math"
-     ]
+     " strip math"]
     [:div.pure-u-1.pure-u-md-1-2]
     [:button.pure-button.pure-button-primary.pure-u-1.pure-u-md-1-4
      {:on-click #(do (db/load-qtree-string)
@@ -212,8 +335,7 @@ and some buttons for interaction."
     [:button.pure-button.pure-button-primary.pure-u-1.pure-u-md-1-4
      {:on-click #(do (db/load-json-string)
                      (db/toggle-input!))}
-     "Load JSON String"]]
-   ])
+     "Load JSON String"]]])
 
 (defn input-component []
   [:div
@@ -221,14 +343,14 @@ and some buttons for interaction."
      [:div.tab
       ;;[:h2 "Input"]
       [sequence-input-component]
-      [tree-input-component]
-      ])
+      [tree-input-component]])
    #_[:a {:on-click db/toggle-input! :href "javascript:void(0)"} ; void() is used as a dummy href
-       (if (db/show-input?) "Hide Input" "Show Input")]])
+      (if (db/show-input?) "Hide Input" "Show Input")]])
 
 ;------------------;
 ; Output component ;
 ; -----------------;
+
 
 (defn copy-to-clipboard [str]
   (let [el (js/document.createElement "textarea")]
@@ -302,7 +424,7 @@ and some buttons for interaction."
       [qtree-output-component]
       [json-output-component]])
    #_[:button.pure-button {:on-click db/toggle-output!} ; void() is used as a dummy href
-       (if (db/show-output?) "Hide Output" "Show Output")]])
+      (if (db/show-output?) "Hide Output" "Show Output")]])
 
 ;------------------;
 ; Manual component ;
@@ -326,7 +448,7 @@ This is an open source project. Find the code [here](https://github.com/DCMLab/t
 1. Select nodes that you want to combine by clicking on them.
    Clicking again deselects a selected node.
    If the node is not a root, the path to the root will be highlighted too, in a different color.
-1. Press `Enter` (or click on `Combine`) to combine the selected subtrees into a new tree.
+1. Press `Enter` or `c` (or click on `Combine`) to combine the selected subtrees into a new tree.
    Only adjacent subtrees can be combined.
    If there are several adjacent groups of trees selected,
    each group will be combined into a new tree.
@@ -340,12 +462,22 @@ This is an open source project. Find the code [here](https://github.com/DCMLab/t
 ###  Additional Functionality
 
 - Double clicking on a node opens a text field to rename that node.
-  Submit the new name by pressing `Enter`.
-  Pressing `e` or `r` opens a text field for every selected node.
-- Pressing `Delete` or `Backspace` (or clicking the `Delete` button)
+  Submit the new name by pressing `Enter`. Pressing `r` opens a text field for every selected node.
+- Pressing `e` (or clicking the `Elaborate` button) generates child nodes from selected nodes,
+  quantity determined by `Split arity`.
+- Pressing `u` or `Ctl+E` (or clicking the `Unelaborate` button) unelaborates all selected nodes, by deleting their descendants.
+- Pressing `Backspace` or `Ctrl+U` (or clicking the `Uncombine` button) uncombines all selected nodes, 
+  removing their ancestors, unless the node is a leaf. 
+  (Only inner nodes or the last leaf node can be uncombined.)
+- Pressing `Delete` (or clicking the `Delete` button)
   deletes all selected nodes and their ancestors.
-  Only inner nodes or the last leaf node can be deleted.
 - Pressing `Esc` (or clicking the `Deselect All` button) deselects all nodes.
+- Pressing `Ctrl+Z` (or clicking the `↩` button) undoes the last changes.
+- Pressing `Ctrl+Y` (or clicking the `↪` button) redoes the last undone changes.
+- Use `⬅️` (Left Arrow key) to create a new root node on the tree's left, or `➡️` (Right Arrow key) for a right-side root node.
+- By selecting `Reverse tree` option, you can flip the orientation of the tree, effectively rendering it upside down.
+- By selecting `Math tree` option, you enable the rendering of all tree content using LaTeX format. 
+  You can also type your input between '$' symbols to render a single label in LaTeX.
 - Pressing `i` or `o` toggles the input or output section, respectively.
   Pressing `m`, `h`, or `?` toggles the manual section.
   Pressing `p` toggles the preview section.
@@ -358,9 +490,10 @@ This is an open source project. Find the code [here](https://github.com/DCMLab/t
   [:div
    (when (db/show-manual?)
      [:div.manual.tab
+      {:style {:line-height "1.5"}}
       (md/md->hiccup manual-string)])
    #_[:a {:on-click db/toggle-manual! :href "javascript:void(0)"} ; void() is used as a dummy href
-    (if (db/show-manual?) "Hide Manual" "Show Manual")]])
+      (if (db/show-manual?) "Hide Manual" "Show Manual")]])
 
 ;---------------;
 ; App component ;
@@ -372,27 +505,37 @@ This is an open source project. Find the code [here](https://github.com/DCMLab/t
     (action!)))
 
 (defn tab-component []
-  [:div.pure-menu.pure-menu-horizontal
-   [:ul.pure-menu-list
-    [:li.pure-menu-item
-     {:class (if (db/show-input?) "pure-menu-selected" "")}
-     [:a.pure-menu-link
-      {:on-click (unfocus db/toggle-input!) :href "javascript:;"}
-      "Input"]]
-    [:li.pure-menu-item
-     {:class (if (db/show-output?) "pure-menu-selected" "")}
-     [:a.pure-menu-link
-      {:on-click (unfocus db/toggle-output!) :href "javascript:;"}
-      "Output"]]
-    [:li.pure-menu-item
-     {:class (if (db/show-preview?) "pure-menu-selected" "")}
-     [:a.pure-menu-link
-      {:on-click (unfocus db/toggle-preview!) :href "javascript:;"}
-      "Preview"]][:li.pure-menu-item
-     {:class (if (db/show-manual?) "pure-menu-selected" "")}
-     [:a.pure-menu-link
-      {:on-click (unfocus db/toggle-manual!) :href "javascript:;"}
-      "Help"]]]])
+  [:div
+   [:div.pure-menu.pure-menu-horizontal
+    [:ul.pure-menu-list
+     [:li.pure-menu-item
+      {:class (if (db/show-input?) "pure-menu-selected" "")}
+      [:a.pure-menu-link
+       {:on-click (unfocus db/toggle-input!) :href "javascript:;"}
+       "Input"]]
+     [:li.pure-menu-item
+      {:class (if (db/show-output?) "pure-menu-selected" "")}
+      [:a.pure-menu-link
+       {:on-click (unfocus db/toggle-output!) :href "javascript:;"}
+       "Output"]]
+     [:li.pure-menu-item
+      {:class (if (db/show-preview?) "pure-menu-selected" "")}
+      [:a.pure-menu-link
+       {:on-click (unfocus db/toggle-preview!) :href "javascript:;"}
+       "Preview"]]
+     [:li.pure-menu-item
+      {:class (if (db/show-manual?) "pure-menu-selected" "")}
+      [:a.pure-menu-link
+       {:on-click (unfocus db/toggle-manual!) :href "javascript:;"}
+       "Help"]]]]
+
+   (when (db/show-preview?)
+     [:div
+      [:button {:style {:margin-top "10px"}
+                :on-click db/save-preview}
+       "Save preview"]])])
+
+
 
 (defn app-component []
   [:div
@@ -427,8 +570,9 @@ This is an open source project. Find the code [here](https://github.com/DCMLab/t
         (when (identical? (.-target event) (.-body js/document))
           (case (.-key event)
             "Enter" (db/combine-selected)
+            "c" (db/combine-selected)
             "Escape" (db/deselect-all)
-            "Backspace" (db/delete-selected)
+            "Backspace" (db/uncombine-selected)
             "Delete" (db/delete-selected)
             "i" (db/toggle-input!)
             "o" (db/toggle-output!)
@@ -436,9 +580,22 @@ This is an open source project. Find the code [here](https://github.com/DCMLab/t
             "m" (db/toggle-manual!)
             "h" (db/toggle-manual!)
             "p" (db/toggle-preview!)
-            "e" (db/start-renaming-selected)
+            "e" (db/elaborate-selected)
+            "u" (db/unelaborate-selected)
             "r" (db/start-renaming-selected)
+            "ArrowLeft" (db/add-left)
+            "ArrowRight" (db/add-right)
             nil)
+
+          ;; If ctrl key was pressed
+          (when (.-ctrlKey event)
+            (case (.-key event)
+              "z" (do (db/undo) (.preventDefault event))  ;; Prevent default 'undo' action in browser
+              "y" (do (db/redo) (.preventDefault event))  ;; Prevent default 'redo' action in browser
+              "u" (do (db/uncombine-selected) (.preventDefault event))
+              "e" (do (db/unelaborate-selected) (.preventDefault event))
+              nil))
+
           (.preventDefault event)
           (.stopPropagation event)
           false)))

@@ -3,8 +3,10 @@
 ;-------------------------;
 
 (ns tree-annotation.database
-  (:require [reagent.core :as r]
+  (:require [reagent.core :as r] 
+            [clojure.walk :as walk]
             [clojure.string :as str]
+            [cljs.reader :as reader] 
             [instaparse.core :as insta :refer-macros [defparser]]))
 
 ; private annotation does currently not work in clojure script
@@ -35,10 +37,50 @@
 }"
    :math-inner        true
    :math-leaves       true
+   :math-tree         false
+   :tree-reversed     false
    :pretty-print-json false
    :strip-math        true
    :forest            []
-   :tab               nil}))
+   :tab               nil
+   :split-arity       2
+   :previous-states   []
+   :redone-states     []}))
+
+
+;----------------------;
+; Undo & Redo requests ;
+;----------------------;
+
+(defn push-current-state []
+  "Pushes the current state onto the undo stack and cleares the redo stack."
+  (swap! db update :previous-states conj @db)
+  (swap! db assoc :redone-states []))
+
+(defn undo []
+  "Undoes the last action."
+  (let [previous-states (:previous-states @db)]
+    (when (not-empty previous-states)
+      (let [last-state (peek previous-states)
+            new-previous-states (pop previous-states)]
+        ;; Before undoing, add current state to redone-states
+        (swap! db assoc :redone-states (conj (:redone-states @db) @db))
+        ;; Undo, and update previous-states (with last element popped out)
+        (swap! db assoc :forest (:forest last-state)) 
+        (swap! db assoc :previous-states new-previous-states)))))
+
+(defn redo []
+  "Redoes the last undone action."
+  (let [redone-states (:redone-states @db)]
+    (when (not-empty redone-states)
+      (let [last-undone-state (peek redone-states)
+            new-redone-states (pop redone-states)]
+        ;; Before redoing, add current state to previous-states
+        (swap! db assoc :previous-states (conj (:previous-states @db) @db))
+        ;; Redo, and update redone-states (with last element popped out)
+        (swap! db assoc :forest (:forest last-undone-state))
+        (swap! db assoc :redone-states new-redone-states)))))
+
 
 ;-----------------------;
 ; Input string requests ;
@@ -49,6 +91,12 @@
 
 (defn set-input-str [input-str]
   (swap! db assoc :input-str (str/trim-newline input-str)))
+
+(defn get-split-arity []
+  (:split-arity @db))
+
+(defn set-split-arity [arity]
+  (swap! db assoc :split-arity arity))
 
 ;----------------------------;
 ; Input tree string requests ;
@@ -133,8 +181,20 @@ of inner and leaf nodes should be enclosed in $s, respecively."
 (defn math-leaves? []
   (:math-leaves @db))
 
+(defn math-tree? []
+  (:math-tree @db))
+
+(defn tree-reverse? []
+  (:tree-reversed @db))
+
 (defn pretty-print-json? []
   (:pretty-print-json @db))
+
+(defn toggle-math-tree! []
+  (swap! db update :math-tree not))
+
+(defn toggle-tree-direction! []
+  (swap! db update :tree-reversed not))
 
 (defn toggle-math-inner! []
   (swap! db update :math-inner not))
@@ -229,7 +289,12 @@ of inner and leaf nodes should be enclosed in $s, respecively."
 
 (defn deselect-all []
   "Deselects all nodes."
+
+  ;; Save the current state
+  (push-current-state)
+
   (swap! db update :forest deselect-all-trees))
+
 
 ;; rename
 ;; ------
@@ -265,6 +330,7 @@ of inner and leaf nodes should be enclosed in $s, respecively."
                    :children (mapv start-renaming-if-selected (:children node))))]
     (swap! db update :forest #(mapv start-renaming-if-selected %))))
 
+
 ;; combine
 ;; -------
 
@@ -276,6 +342,7 @@ of inner and leaf nodes should be enclosed in $s, respecively."
            :label label
            :children (deselect-all-trees children)
            :width (reduce + (map :width children)))))
+
 
 (defn combine-selected-trees
   ([forest]
@@ -305,7 +372,87 @@ of inner and leaf nodes should be enclosed in $s, respecively."
 
 (defn combine-selected []
   "Finds groups of adjacent selected trees and combines them."
+
+  ;; Save the current state
+  (push-current-state)
+
   (swap! db update :forest combine-selected-trees))
+
+
+;; elaborate
+;; ---------
+
+(defn create-node [label]
+  "Creates a new node with a given label."
+  (assoc default-node
+         :label label 
+         :selected false
+         :width 1))
+
+(defn elaborate-node [node]
+  "If the node is a leaf and it is selected, adds `split-arity` children labeled '*'.
+   Otherwise, applies `elaborate-node` to all its children."
+  (if (and (leaf? node) (tree-selected? node))
+    (let [new-children (repeat (:split-arity @db) (create-node "*"))]
+      (assoc node :children new-children))
+    (assoc node :children (map elaborate-node (:children node)))))
+
+
+(defn elaborate-selected []
+  "Finds selected trees and elaborates them."
+
+  ;; Save the current state
+  (push-current-state)
+
+  (swap! db update :forest (fn [forest] (map elaborate-node forest)))
+  (deselect-all))
+
+
+;; uncombine
+;; ---------
+
+(defn node-uncombine-selected [node]
+  "Deletes all selected descendants of `node` (including `node` itself) and their ancestors.
+   Returns either the unchanged node or, if any node was deleted,
+   a list of remaining subtrees."
+  (let [subtrees (mapv node-uncombine-selected (:children node))]
+    (if (or (and (:selected node) (not (leaf? node))) ; node selected?     -> delete node
+            (not-every? map? subtrees))               ; any child deleted? -> delete node
+      (vec (flatten subtrees))                        ; delete node by returning chilren
+      node)))                                         ; keep node
+
+(defn uncombine-selected []
+  "Delete all selected nodes and their ancestors, if not a leaf."
+
+  ;; Save the current state
+  (push-current-state)
+
+  (letfn [(delete-sel [forest]
+            (vec (flatten (map node-uncombine-selected forest))))]
+    (swap! db update :forest delete-sel)))
+
+
+;; unelaborate
+;; -----------
+
+(defn node-unelaborate-selected [node]
+  "If `node` is selected, deletes all its children.
+   Returns the unchanged node or the node without children if it was selected."
+  (if (:selected node)
+    (assoc node :children [])  ;; Remove children by setting :children to empty list
+    (assoc node :children (mapv node-unelaborate-selected (:children node)))))  ;; Otherwise, recursively check children
+
+(defn unelaborate-selected []
+  "Removes all children of selected nodes."
+
+  ;; Save the current state
+  (push-current-state)
+
+  ;; Update the forest
+  (swap! db update :forest (fn [forest]
+                             (mapv node-unelaborate-selected forest))))
+
+
 
 ;; delete
 ;; ------
@@ -315,16 +462,86 @@ of inner and leaf nodes should be enclosed in $s, respecively."
    Returns either the unchanged node or, if any node was deleted,
    a list of remaining subtrees."
   (let [subtrees (mapv node-delete-selected (:children node))]
-    (if (or (and (:selected node) (not (leaf? node))) ; node selected?     -> delete node
-            (not-every? map? subtrees))               ; any child deleted? -> delete node
-      (vec (flatten subtrees))                        ; delete node by returning chilren
-      node)))                                         ; keep node
+    (if (or (:selected node)            ; node selected?     -> delete node
+            (not-every? map? subtrees)) ; any child deleted? -> delete node
+      (vec (flatten subtrees))          ; delete node by returning chilren
+      node)))                           ; keep node
 
 (defn delete-selected []
   "Delete all selected nodes and their ancestors."
+
+  ;; Save the current state
+  (push-current-state)
+
   (letfn [(delete-sel [forest]
             (vec (flatten (map node-delete-selected forest))))]
     (swap! db update :forest delete-sel)))
+
+
+;; add-left
+;; --------
+
+(defn add-left []
+  "Creates a new node with a given label and adds it to the left of the root nodes in the forest."
+
+  ;; Save the current state
+  (push-current-state)
+
+  (let [new-node (create-node "*")]  ;; create a new node
+    (swap! db update :forest #(vec (cons new-node %)))))  ;; add new node to the beginning of the forest
+
+
+
+;; add-right
+;; ---------
+
+(defn add-right []
+  "Creates a new node with a given label and adds it to the right of the root nodes in the forest."
+
+  ;; Save the current state
+  (push-current-state)
+
+  (let [new-node (create-node "*")]  ;; create a new node
+    (swap! db update :forest conj new-node)))  ;; add new node to the end of the forest
+
+
+;; screenshot
+;; ----------
+
+#_(defn save-preview []
+  (dotimes [i (.-length (js/document.getElementsByClassName "katex-html"))]
+    (.remove (aget (js/document.getElementsByClassName "katex-html") 0)))
+  (-> (js/html2canvas (js/document.getElementById "preview"))
+      (.then (fn [canvas]
+               (doto (js/document.createElement "a")
+                 (set! -href (.toDataURL canvas "image/png"))
+                 (set! -download "preview.png")
+                 .click)))))
+
+(defn save-preview []
+  (let [svg-content (js/document.getElementById "preview")
+        katex-html-elements (.. svg-content (getElementsByClassName "katex-html"))]
+    (dotimes [i (.-length katex-html-elements)]
+      (set! (.-style.display (aget katex-html-elements i)) "none"))
+    (let [serializer (js/XMLSerializer.)
+          serialized-svg (.serializeToString serializer svg-content)
+          blob (js/Blob. (clj->js [serialized-svg]) (clj->js {:type "image/svg+xml;charset=utf-8"}))
+          url (.createObjectURL js/URL blob)
+          link (js/document.createElement "a")]
+      (set! (.-href link) url)
+      (set! (.-download link) "preview.svg")
+      (.click link))))
+
+
+(defn save-forest []
+  (-> (js/html2canvas (js/document.getElementById "forest") {:scale 5})  ; Increase the scale for a more detailed screenshot
+      (.then (fn [canvas]
+               (let [link (js/document.createElement "a")
+                     data (.toDataURL canvas "image/png")]
+                 (set! (.-href link) data)
+                 (set! (.-download link) "forest.png")
+                 (.click link))))))
+
 
 ;; parse
 ;; -----

@@ -59,6 +59,61 @@ code {
     background: rgb(202,60,60);
 }
 
+.button-elaborate {
+color: black;
+    /* text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2); */
+    background: rgb(255,180,80);
+}
+
+.button-combine {
+color: black;
+    /* text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2); */
+    background: rgb(136,210,0);
+}
+
+.button-uncombine {
+color: white;
+    /* text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2); */
+    background: rgb(150,150,150);
+}
+
+.button-undo {
+    color: white;
+    /* text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2); */
+    background: rgb(250,30,0);
+}
+
+.button-redo {
+    color: white;
+    /* text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2); */
+    background: rgb(250,160,0);
+}
+
+.wrapper {
+    width: fit-content;
+    margin: 0 auto; /* centers the wrapper */
+}
+
+.button-new-left {
+    transform: translateY(-50%);  /* This is to counteract the offset from top */
+}
+
+.button-new-right {
+    transform: translateY(-50%);  /* This is to counteract the offset from top */
+}
+
+.reverse-box {
+    position: absolute;
+    margin-top: -20px;
+    margin-left: 20px;
+}
+
+.math-box {
+    position: absolute;
+    margin-left: 20px;
+}
+
+
 textarea {
     max-width: 100%;
 }
@@ -69,6 +124,9 @@ textarea {
 }
 
 .controls {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
     margin-left: auto;
     margin-right: auto;
     margin-bottom: 1em;
@@ -76,6 +134,7 @@ textarea {
 }
 
 .forest {
+    margin-top: 20px;
     display: flex;
     flex-direction: row;
     width: min-content;
@@ -90,7 +149,22 @@ textarea {
 
 .subtree {
     /* margin-top: 1px; */
+    display: flex;
+    flex-direction: column;
     margin-right: 2px;
+    margin-top: 2px;
+    margin-bottom: 0px;
+    flex-grow: 1;
+    flex-basis: auto;
+}
+
+.subtree.reversed {
+    /* margin-top: 1px; */
+    display: flex;
+    flex-direction: column-reverse;
+    margin-right: 2px;
+    margin-top: 0px;
+    margin-bottom: 2px;
     flex-grow: 1;
     flex-basis: auto;
 }
@@ -100,20 +174,28 @@ textarea {
 }
 
 .children {
-    margin-bottom: 2px;
+    margin-bottom: 0px;
+    margin-top: 0px;
     width: 100%;
+    flex-grow: 0;
 }
+
 
 .node {
     /* position: absolute; */
     border-style: solid;
     border-width: thin;
     border-color: #555;
+    display: flex;
     text-align: center;
+    align-items: center;
+    justify-content: center;
     min-width: 10px;
     padding: 0.5em 1em;
+    flex-grow: 1;
     
 }
+
 
 div.node {
     cursor: pointer;
@@ -134,3 +216,19 @@ div.node.selected {
 div.node.tree-selected {
     background-color: #88e;
 }
+
+.katex .katex-mathml {
+    position: static;
+    clip: auto;
+    padding: 3px;
+    border: 0;
+    height: auto; 
+    width: auto; 
+    overflow: hidden;
+    display: block;
+}
+
+.katex .katex-html {
+    display: none;
+}
+
